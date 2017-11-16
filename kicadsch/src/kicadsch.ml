@@ -1,4 +1,7 @@
-module MakeSchPainter (P: KicadSch_sigs.Painter): KicadSch_sigs.SchPainter =
+open KicadSch_sigs
+module SvgPainter = SvgPainter
+module Sigs=KicadSch_sigs
+module MakeSchPainter (P: Painter): (SchPainter with type painterContext := P.t) =
 struct
   module CPainter = Kicadlib.MakePainter(P)
 
@@ -56,15 +59,15 @@ struct
     | "I"| "Input" -> InputPort
     | "B"| "BiDi" -> BiDiPort
     | "~" -> NoPort
-    |   _ as s -> ignore (Lwt_io.eprintf "unknown port type %s\n" s); NoPort
+    |   _ as s -> ignore (Printf.printf "unknown port type %s\n" s); NoPort
 
   let justify_of_string s =
     match String.get s 0 with
     | 'L'| '0' -> J_left
     | 'R'| '2' -> J_right
     | 'C' -> J_center
-    | 'B' | '3' -> J_bottom
-    | 'T' | '1' -> J_top
+    | 'B' | '1' -> J_bottom
+    | 'T' | '3' -> J_top
     | c -> failwith (Printf.sprintf "no match for justify! (%c)" c)
 
   let style_of_string s =
@@ -95,13 +98,13 @@ struct
     ~regexp_str:"F [\\d-]+ \"([^\"]*)\" (H|V) ([\\d-]+) ([\\d-]+) ([\\d-]+)? +(0|1)(0|1)(0|1)(0|1) (L|R|C|B|T) (L|R|C|B|T)(I|N)(B|N)"
     ~extract_fun:
     (fun sp ->
-      let co = Coord (int_of_string sp.(3), int_of_string sp.(4)) and
-          o = orientation_of_string sp.(2) and
-          s = Size (int_of_string sp.(5))and
-          j = justify_of_string sp.(10) and
-          stl = style_of_string (sp.(12), sp.(13)) and
-          visible = if (String.get sp.(9) 0 = '0') then true else false in
-      Some (visible, sp.(1), o, co, s, j, stl)
+        let co = Coord (int_of_string sp.(3), int_of_string sp.(4)) and
+            o = orientation_of_string sp.(2) and
+            s = Size (int_of_string sp.(5))and
+            j = justify_of_string sp.(10) and
+            stl = style_of_string (sp.(12), sp.(13)) and
+            visible = (String.get sp.(9) 0 == '0') && not (String.equal "~" sp.(1)) in
+        Some (visible, sp.(1), o, co, s, j, stl)
     )
 
   let parse_L =
@@ -167,7 +170,7 @@ struct
       else
         o in
     let j' = match o' with
-      | Orient_H -> if ((a = (-1)) or (b = (1))) then (swap_justify j) else j
+      | Orient_H -> if ((a = (-1)) or (b = (-1))) then (swap_justify j) else j
       | Orient_V -> if ((c = (1)) or (d = (-1))) then (swap_justify j) else j in
     P.paint_text text o' (Coord (x', y')) s j' stl context
 
@@ -180,19 +183,19 @@ struct
     let port_char = match ptype, justif with
       |  UnSpcPort,_ | NoPort,_ -> ""
       | ThreeStatePort,_  | BiDiPort,_ -> diamond
-      | OutputPort,(J_right|J_top) | InputPort, (J_left | J_bottom) -> left_arrow
-      | OutputPort, (J_left | J_bottom) | InputPort, (J_right | J_top) -> right_arrow
+      | OutputPort,(J_left|J_top) | InputPort, (J_right | J_bottom) -> left_arrow
+      | OutputPort, (J_right | J_bottom) | InputPort, (J_left | J_top) -> right_arrow
       | _, J_center -> square
     in
     match justif with
-      | J_right | J_top -> port_char ^ name
-      | J_left |J_bottom -> name ^ port_char
+      | J_left | J_top -> port_char ^ name
+      | J_right |J_bottom -> name ^ port_char
       | J_center -> name
 
   let draw_port ?(kolor=Black) name ptype justif (Coord (x,y)) (Size l as s) canevas =
     let new_port_name = decorate_port_name name ptype justif in
     let orient = orientation_of_justify justif in
-    let j = if orient = Orient_H then swap_justify justif else justif in
+    let j = justif in
     let _ = kolor in
     let c = match orient with
     | Orient_H -> Coord (x,y+l/4)
@@ -249,7 +252,7 @@ struct
                 (Printf.printf "cannot plot component with missing definitions !";
                  comp, canevas)
            else comp,canevas)
-    | _ -> (ignore(Lwt_io.eprintf "ignored %s\n" line);
+    | _ -> (ignore(Printf.printf "ignored %s\n" line);
           comp, canevas)
 
   let parse_wire_wire =
@@ -341,15 +344,15 @@ struct
     ~regexp_str: "Text (GLabel|HLabel|Label|Notes) +([\\d-]+) +([\\d-]+) +([\\d-]+) +([\\d-]+) +(~|UnSpc|3State|Output|Input|BiDi)"
     ~extract_fun: (fun sp ->
       let c = Coord (int_of_string sp.(2), int_of_string sp.(3)) and
-          orient = justify_of_string sp.(4) and
+          j = justify_of_string sp.(4) and
           size = Size (int_of_string sp.(5)) in
-      let labeltype =
+      let labeltype, orient =
         match sp.(1) with
-        | "GLabel" -> PortLabel (Glabel, porttype_of_string sp.(6))
-        | "HLabel" -> PortLabel (Hlabel, porttype_of_string sp.(6))
-        | "Label" -> TextLabel WireLabel
-        | "Notes" -> TextLabel TextNote
-        | _ -> TextLabel TextNote in
+        | "GLabel" -> PortLabel (Glabel, porttype_of_string sp.(6)), swap_justify j
+        | "HLabel" -> PortLabel (Hlabel, porttype_of_string sp.(6)), swap_justify j
+        | "Label" -> TextLabel WireLabel, j
+        | "Notes" -> TextLabel TextNote, j
+        | _ -> TextLabel TextNote, j in
       Some {c; size; orient; labeltype})
 
   let parse_descr_header =
@@ -599,8 +602,8 @@ struct
          let nb = parse_bitmap_line line b in
          lib, BitmapContext nb, canevas
 
-  let output_context (_, _, canevas) oc =
-     P.write oc canevas
+  let output_context (_, _, canevas):P.t =
+     canevas
 
   let add_lib line (lib, ctxt, canevas) =
     (CPainter.append_lib line lib) |>

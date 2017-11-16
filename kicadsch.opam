@@ -6,14 +6,15 @@ bug-reports: "https://github.com/jnavila/plotkicadsch/issues"
 license: "ISC"
 dev-repo: "https://github.com/jnavila/plotkicadsch.git"
 build: [
-  [ "jbuilder" "subst"] {pinned}
+  [ "jbuilder" "subst" ] {pinned}
   [ "jbuilder" "build" "-p" name "-j" jobs ]
 ]
+build-test: [["jbuilder" "runtest" "-p" name "-j" jobs]]
 depends: [
   "jbuilder" {build}
-  "kicadsch"
-  "lwt"
-  "sha"
-  "git"
-  "git-unix"
+  "ounit" {test}
+  "pcre"
+  "tyxml" {>= "4.0.0"}
+  "base64"
 ]
+available: [ ocaml-version >= "4.03" ]
